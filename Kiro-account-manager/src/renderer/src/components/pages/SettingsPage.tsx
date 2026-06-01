@@ -1,5 +1,5 @@
 import { useAccountsStore } from '@/store/accounts'
-import { Card, CardContent, CardHeader, CardTitle, Button } from '../ui'
+import { Card, CardContent, CardHeader, CardTitle, Button, Input, Label, Switch } from '../ui'
 import { Eye, EyeOff, RefreshCw, Clock, Trash2, Download, Upload, Globe, Repeat, Palette, Moon, Sun, Fingerprint, Info, ChevronDown, ChevronUp, Settings, Database, Layers, UserX, Monitor } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { ExportDialog } from '../accounts/ExportDialog'
@@ -215,6 +215,92 @@ export function SettingsPage() {
   const [shortcutLoading, setShortcutLoading] = useState(true)
   const [shortcutError, setShortcutError] = useState('')
   const [isRecordingShortcut, setIsRecordingShortcut] = useState(false)
+
+  // ===== sub2api Webhook 配置 =====
+  const [sub2apiEnabled, setSub2apiEnabled] = useState(false)
+  const [sub2apiBaseUrl, setSub2apiBaseUrl] = useState('')
+  const [sub2apiToken, setSub2apiToken] = useState('')
+  const [sub2apiNamePrefix, setSub2apiNamePrefix] = useState('auto-kiro')
+  const [sub2apiGroupIds, setSub2apiGroupIds] = useState('')
+  const [sub2apiSaving, setSub2apiSaving] = useState(false)
+  const [sub2apiTesting, setSub2apiTesting] = useState(false)
+  const [sub2apiMessage, setSub2apiMessage] = useState<{ ok: boolean; text: string } | null>(null)
+  const [sub2apiTokenVisible, setSub2apiTokenVisible] = useState(false)
+
+  useEffect(() => {
+    const load = async (): Promise<void> => {
+      try {
+        const cfg = await window.api.sub2apiWebhook.getConfig()
+        if (cfg && !('error' in cfg)) {
+          setSub2apiEnabled(!!cfg.enabled)
+          setSub2apiBaseUrl(cfg.baseUrl || '')
+          setSub2apiToken(cfg.adminToken || '')
+          setSub2apiNamePrefix(cfg.namePrefix || 'auto-kiro')
+          setSub2apiGroupIds((cfg.groupIds || []).join(', '))
+        }
+      } catch (err) {
+        console.error('load sub2api webhook config:', err)
+      }
+    }
+    load()
+  }, [])
+
+  const parseGroupIds = (text: string): number[] => {
+    return text
+      .split(/[,，\s]+/)
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isFinite(n) && n > 0)
+  }
+
+  const buildSub2apiPayload = (): {
+    enabled: boolean
+    baseUrl: string
+    adminToken: string
+    namePrefix?: string
+    groupIds?: number[]
+  } => ({
+    enabled: sub2apiEnabled,
+    baseUrl: sub2apiBaseUrl.trim().replace(/\/+$/, ''),
+    adminToken: sub2apiToken.trim(),
+    namePrefix: sub2apiNamePrefix.trim() || 'auto-kiro',
+    groupIds: parseGroupIds(sub2apiGroupIds)
+  })
+
+  const handleSub2apiSave = async (): Promise<void> => {
+    setSub2apiSaving(true)
+    setSub2apiMessage(null)
+    try {
+      const payload = buildSub2apiPayload()
+      const r = await window.api.sub2apiWebhook.setConfig(payload)
+      if (r.ok) {
+        setSub2apiMessage({ ok: true, text: '配置已保存' })
+      } else {
+        setSub2apiMessage({ ok: false, text: r.error || '保存失败' })
+      }
+    } catch (err) {
+      setSub2apiMessage({ ok: false, text: (err as Error).message })
+    } finally {
+      setSub2apiSaving(false)
+    }
+  }
+
+  const handleSub2apiTest = async (): Promise<void> => {
+    setSub2apiTesting(true)
+    setSub2apiMessage(null)
+    try {
+      const payload = buildSub2apiPayload()
+      if (!payload.baseUrl) {
+        setSub2apiMessage({ ok: false, text: '请先填写 sub2api 地址' })
+        return
+      }
+      const r = await window.api.sub2apiWebhook.test(payload)
+      setSub2apiMessage({ ok: r.ok, text: r.message })
+    } catch (err) {
+      setSub2apiMessage({ ok: false, text: (err as Error).message })
+    } finally {
+      setSub2apiTesting(false)
+    }
+  }
 
   // 加载快捷键设置
   useEffect(() => {
@@ -1082,6 +1168,105 @@ export function SettingsPage() {
 
       {/* 配置同步（不含敏感凭据，便于多设备共享） */}
       <ConfigSyncCard isEn={isEn} />
+
+      {/* sub2api 自动同步 */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Upload className="h-5 w-5" />
+            sub2api 自动同步
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            注册成功后自动把账号推送到 sub2api 账号池。仅在自动注册流程结束时触发，失败仅在日志记录，不阻塞注册。
+          </p>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="font-medium">启用 Webhook</Label>
+              <p className="text-xs text-muted-foreground">关闭后注册流程不会推送到 sub2api</p>
+            </div>
+            <Switch checked={sub2apiEnabled} onCheckedChange={setSub2apiEnabled} />
+          </div>
+
+          <div className="space-y-1">
+            <Label>sub2api 地址</Label>
+            <Input
+              type="text"
+              value={sub2apiBaseUrl}
+              onChange={(e) => setSub2apiBaseUrl(e.target.value)}
+              placeholder="http://10.10.9.104:8080"
+            />
+            <p className="text-xs text-muted-foreground">sub2api 后端地址，含端口；不要带尾部斜杠</p>
+          </div>
+
+          <div className="space-y-1">
+            <Label>Admin Token</Label>
+            <div className="flex gap-2">
+              <Input
+                type={sub2apiTokenVisible ? 'text' : 'password'}
+                value={sub2apiToken}
+                onChange={(e) => setSub2apiToken(e.target.value)}
+                placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                className="flex-1"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setSub2apiTokenVisible((v) => !v)}
+              >
+                {sub2apiTokenVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">sub2api 管理员 API Token，从 sub2api 后台「设置 - API Token」生成</p>
+          </div>
+
+          <div className="space-y-1">
+            <Label>账号名前缀（可选）</Label>
+            <Input
+              type="text"
+              value={sub2apiNamePrefix}
+              onChange={(e) => setSub2apiNamePrefix(e.target.value)}
+              placeholder="auto-kiro"
+            />
+            <p className="text-xs text-muted-foreground">自动建账号时的命名前缀，留空使用 auto-kiro</p>
+          </div>
+
+          <div className="space-y-1">
+            <Label>自动绑定分组 ID（可选，逗号分隔）</Label>
+            <Input
+              type="text"
+              value={sub2apiGroupIds}
+              onChange={(e) => setSub2apiGroupIds(e.target.value)}
+              placeholder="1, 3"
+            />
+            <p className="text-xs text-muted-foreground">分组 ID 列表，留空则不自动绑定分组</p>
+          </div>
+
+          {sub2apiMessage && (
+            <div
+              className={`text-sm rounded p-2 ${
+                sub2apiMessage.ok
+                  ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400'
+                  : 'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-400'
+              }`}
+            >
+              {sub2apiMessage.text}
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            <Button onClick={handleSub2apiSave} disabled={sub2apiSaving}>
+              {sub2apiSaving ? '保存中…' : '保存配置'}
+            </Button>
+            <Button variant="outline" onClick={handleSub2apiTest} disabled={sub2apiTesting}>
+              {sub2apiTesting ? '测试中…' : '测试连接'}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* 导出对话框 */}
       <ExportDialog

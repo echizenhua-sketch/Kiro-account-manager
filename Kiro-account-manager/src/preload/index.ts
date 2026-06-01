@@ -1248,6 +1248,35 @@ const api = {
     return () => {
       ipcRenderer.removeListener('registration-complete', handler)
     }
+  },
+
+  // sub2api Webhook 配置
+  sub2apiWebhook: {
+    getConfig: (): Promise<{
+      enabled: boolean
+      baseUrl: string
+      adminToken: string
+      namePrefix?: string
+      groupIds?: number[]
+    } | { error: string } | null> => {
+      return ipcRenderer.invoke('sub2api-webhook:get-config')
+    },
+    setConfig: (cfg: {
+      enabled: boolean
+      baseUrl: string
+      adminToken: string
+      namePrefix?: string
+      groupIds?: number[]
+    }): Promise<{ ok: boolean; config?: unknown; error?: string }> => {
+      return ipcRenderer.invoke('sub2api-webhook:set-config', cfg)
+    },
+    test: (cfg: {
+      enabled: boolean
+      baseUrl: string
+      adminToken: string
+    }): Promise<{ ok: boolean; status?: number; message: string }> => {
+      return ipcRenderer.invoke('sub2api-webhook:test', cfg)
+    }
   }
 }
 

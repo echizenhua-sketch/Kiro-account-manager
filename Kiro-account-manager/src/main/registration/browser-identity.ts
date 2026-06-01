@@ -98,6 +98,30 @@ const PLUGINS_POOL = [
   { name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }
 ]
 
+// Chrome 主版本池（覆盖近半年常见线上版本，避免 UA 全部 137.0.0.0）
+const CHROME_VERSIONS = [
+  '131.0.0.0', '132.0.0.0', '133.0.0.0', '134.0.0.0',
+  '135.0.0.0', '136.0.0.0', '137.0.0.0', '138.0.0.0',
+  '139.0.0.0', '140.0.0.0', '141.0.0.0', '142.0.0.0'
+]
+
+// UA 平台模板，匹配真实分布
+const UA_PLATFORMS = [
+  { os: 'Windows NT 10.0; Win64; x64', weight: 50 },
+  { os: 'Windows NT 11.0; Win64; x64', weight: 15 },
+  { os: 'Macintosh; Intel Mac OS X 10_15_7', weight: 18 },
+  { os: 'Macintosh; Intel Mac OS X 11_7_10', weight: 5 },
+  { os: 'X11; Linux x86_64', weight: 7 },
+  { os: 'X11; Ubuntu; Linux x86_64', weight: 5 }
+]
+
+// 常见时区偏移（小时为单位，与 IP 大致匹配的国家分布）
+const TIMEZONE_POOL = [
+  -8, -7, -6, -5, -4,  // 美洲
+  0, 1, 2,             // 欧洲/英国
+  8, 9                 // 东亚
+]
+
 function randInt(max: number): number {
   return Math.floor(Math.random() * max)
 }
@@ -138,6 +162,7 @@ export interface BrowserIdentity {
   lsubidPrefixSignin: string
   lsubidPrefixProfile: string
   webpackHash: string
+  timeZone: number
 }
 
 function generateCanvasData(): { hash: number; histogram: number[] } {
@@ -190,9 +215,20 @@ export function randomIdentity(): BrowserIdentity {
 
   const plugins = shuffle([...PLUGINS_POOL])
 
+  // 加权挑 UA 平台
+  const totalWeight = UA_PLATFORMS.reduce((s, p) => s + p.weight, 0)
+  let r = randInt(totalWeight)
+  let platform = UA_PLATFORMS[0]
+  for (const p of UA_PLATFORMS) {
+    if (r < p.weight) { platform = p; break }
+    r -= p.weight
+  }
+  const chromeVer = pick(CHROME_VERSIONS)
+  const ua = `Mozilla/5.0 (${platform.os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVer} Safari/537.36`
+
   return {
-    chromeVer: '137.0.0.0',
-    ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
+    chromeVer,
+    ua,
     gpuVendor: gpu.vendor,
     gpuModel: gpu.model,
     webGLExts: exts,
@@ -209,7 +245,8 @@ export function randomIdentity(): BrowserIdentity {
     },
     lsubidPrefixSignin: pick(LSUBID_PREFIXES),
     lsubidPrefixProfile: pick(LSUBID_PREFIXES),
-    webpackHash: randInt(0x7fffffff).toString(16).padStart(10, '0').slice(0, 10)
+    webpackHash: randInt(0x7fffffff).toString(16).padStart(10, '0').slice(0, 10),
+    timeZone: pick(TIMEZONE_POOL)
   }
 }
 

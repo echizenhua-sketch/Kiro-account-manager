@@ -329,7 +329,7 @@ export function buildFingerprintData(
     phantom: { properties: { window: [] } }
   })
   result.set('end', endMs)
-  result.set('timeZone', 8)
+  result.set('timeZone', identity.timeZone)
   result.set('flashVersion', null)
   result.set('plugins', pluginsStr + ' ||' + screenStr)
   result.set('dupedPlugins', pluginsStr + ' ||' + screenStr)

@@ -123,6 +123,7 @@ export interface Account {
   status: AccountStatus
   lastError?: string
   isActive: boolean // 是否为当前激活账号
+  inProxyPool?: boolean // 是否加入 Kiro API 代理池（默认 false，不加入）
 
   // 时间戳
   createdAt: number

@@ -179,9 +179,9 @@ export class TempMailPlusService implements TempEmailService {
   private address = ''
 
   constructor(tmEmail: string, epin: string, domain: string) {
-    this.tmEmail = tmEmail
-    this.epin = epin
-    this.domain = domain.replace(/^@/, '')
+    this.tmEmail = tmEmail.trim().replace(/@mailto\.plus$/i, '').replace(/^@/, '')
+    this.epin = epin.trim()
+    this.domain = domain.trim().replace(/^@/, '')
   }
 
   private get headers(): Record<string, string> {

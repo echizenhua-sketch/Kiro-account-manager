@@ -6,7 +6,6 @@ import { FingerprintContext, newFPContext, resetPerfTiming, generateFingerprint 
 import { encryptPassword } from './jwe'
 import { refreshAppJSConfig } from './xxtea'
 import {
-  DEFAULT_UA, DEFAULT_SEC_UA,
   visitorId, awsccc, ubidGen, newUUID, gmtDate,
   extractParam, splitAfter, saveCookies,
   getNestedMap, getNestedStringMap
@@ -115,6 +114,25 @@ export class Registrar {
     }
   }
 
+  /** 与 identity 一致的 User-Agent，避免 UA 头与指纹声明的 UA 不一致被 TES 识别 */
+  private get ua(): string {
+    return this.identity.ua
+  }
+
+  /** 与 identity Chrome 主版本一致的 sec-ch-ua 头 */
+  private get secChUa(): string {
+    const major = this.identity.chromeVer.split('.')[0]
+    return `"Chromium";v="${major}", "Not/A)Brand";v="24", "Google Chrome";v="${major}"`
+  }
+
+  /** 与 identity UA 平台一致的 sec-ch-ua-platform 头 */
+  private get secChUaPlatform(): string {
+    const ua = this.identity.ua
+    if (ua.includes('Macintosh')) return '"macOS"'
+    if (ua.includes('Linux')) return '"Linux"'
+    return '"Windows"'
+  }
+
   /**
    * 初始化 TLS 客户端
    *
@@ -125,15 +143,38 @@ export class Registrar {
    *   4. GitHub 下载到 userData（最后兜底，仅首次）
    */
   private async initTlsClient(): Promise<void> {
+    this.moduleClient = await Registrar.getSharedModuleClient(this.getTlsClientOptions())
+    this.log('[TLS] using shared ModuleClient, pool stats: ' + JSON.stringify(this.moduleClient.getPoolStats()))
+    this.session = new SessionClient(this.moduleClient, this.sessionOpts)
+  }
+
+  private getTlsClientOptions(): { customLibraryPath?: string; customLibraryDownloadPath?: string } {
     const { existingPath, downloadDir } = this.ensureTlsLib()
-    // 已有具体文件 → customLibraryPath；否则 → customLibraryDownloadPath，让 open() 自动下载
-    const opts = existingPath
+    // 已有具体文件 -> customLibraryPath；否则 -> customLibraryDownloadPath，让 open() 自动下载
+    return existingPath
       ? { customLibraryPath: existingPath }
       : { customLibraryDownloadPath: downloadDir }
-    this.moduleClient = new ModuleClient(opts)
-    await this.moduleClient.open()  // open() 内部会按需 downloadLibrary
-    this.log('[TLS] open() completed, pool stats: ' + JSON.stringify(this.moduleClient.getPoolStats()))
-    this.session = new SessionClient(this.moduleClient, this.sessionOpts)
+  }
+
+  // 共享单例 ModuleClient（按需懒加载 + 互斥初始化），避免多并发注册时打爆 Go TLS 进程池
+  private static sharedModuleClient: ModuleClient | null = null
+  private static sharedModuleClientInit: Promise<ModuleClient> | null = null
+  private static async getSharedModuleClient(opts: { customLibraryPath?: string; customLibraryDownloadPath?: string }): Promise<ModuleClient> {
+    if (Registrar.sharedModuleClient) return Registrar.sharedModuleClient
+    if (Registrar.sharedModuleClientInit) return Registrar.sharedModuleClientInit
+
+    Registrar.sharedModuleClientInit = (async () => {
+      const mc = new ModuleClient(opts)
+      await mc.open()
+      Registrar.sharedModuleClient = mc
+      return mc
+    })()
+
+    try {
+      return await Registrar.sharedModuleClientInit
+    } finally {
+      Registrar.sharedModuleClientInit = null
+    }
   }
 
   /**
@@ -205,13 +246,11 @@ export class Registrar {
   }
 
   private async rebuildTlsClient(): Promise<void> {
+    // 仅重建本任务的 SessionClient；共享的 ModuleClient 保留
     try { await this.session?.destroySession() } catch { /* ignore */ }
     this.session = null
-    if (this.moduleClient) {
-      try { await this.moduleClient.terminate() } catch { /* ignore */ }
-      this.moduleClient = null
-    }
-    await this.initTlsClient()
+    this.moduleClient = await Registrar.getSharedModuleClient(this.getTlsClientOptions())
+    this.session = new SessionClient(this.moduleClient, this.sessionOpts)
   }
 
   /**
@@ -240,24 +279,14 @@ export class Registrar {
       || err.message.includes('failed to modify existing client')
   }
 
-  /** 清理 TLS 客户端资源 */
+  /** 清理 TLS 客户端资源（仅销毁本任务的 SessionClient；ModuleClient 全局共享，不在这里 terminate） */
   private async cleanup(): Promise<void> {
     if (this.session) {
       try { await this.session.destroySession() } catch { /* ignore */ }
       this.session = null
     }
-    if (this.moduleClient) {
-      try {
-        await this.moduleClient.terminate()
-      } catch (err: unknown) {
-        // piscina 线程池终止时可能有排队任务被中止，属于预期行为
-        const msg = err instanceof Error ? err.message : String(err)
-        if (!msg.includes('aborted') && !msg.includes('terminated')) {
-          console.error('Error during ModuleClient termination:', err)
-        }
-      }
-      this.moduleClient = null
-    }
+    // 不要 terminate 共享的 ModuleClient（多并发注册任务会互相影响）
+    this.moduleClient = null
   }
 
   /** 公共销毁方法，供外部调用释放资源 */
@@ -277,10 +306,10 @@ export class Registrar {
       'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
       'Accept-Encoding': 'gzip, deflate, br',
       'Content-Type': 'application/json',
-      'User-Agent': DEFAULT_UA,
-      'sec-ch-ua': DEFAULT_SEC_UA,
+      'User-Agent': this.ua,
+      'sec-ch-ua': this.secChUa,
       'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Windows"',
+      'sec-ch-ua-platform': this.secChUaPlatform,
       'sec-fetch-dest': 'empty',
       'sec-fetch-mode': 'cors',
       'sec-fetch-site': 'same-origin'
@@ -296,12 +325,12 @@ export class Registrar {
       'Accept': '*/*',
       'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
       'Content-Type': 'application/json;charset=UTF-8',
-      'User-Agent': DEFAULT_UA,
+      'User-Agent': this.ua,
       'Origin': this.cfg.profileBase,
       'Referer': referer,
-      'sec-ch-ua': DEFAULT_SEC_UA,
+      'sec-ch-ua': this.secChUa,
       'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Windows"',
+      'sec-ch-ua-platform': this.secChUaPlatform,
       'sec-fetch-dest': 'empty',
       'sec-fetch-mode': 'cors',
       'sec-fetch-site': 'same-origin',
@@ -404,9 +433,9 @@ export class Registrar {
   private async fetchD2CToken(origin: string, referer: string): Promise<void> {
     const headers: Record<string, string> = {
       'Accept': '*/*', 'Content-Type': 'application/json',
-      'User-Agent': DEFAULT_UA, 'Origin': origin, 'Referer': referer,
-      'sec-ch-ua': DEFAULT_SEC_UA, 'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Windows"', 'sec-fetch-dest': 'empty',
+      'User-Agent': this.ua, 'Origin': origin, 'Referer': referer,
+      'sec-ch-ua': this.secChUa, 'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': this.secChUaPlatform, 'sec-fetch-dest': 'empty',
       'sec-fetch-mode': 'cors', 'sec-fetch-site': 'cross-site', 'priority': 'u=1, i'
     }
     const parts: string[] = []
@@ -458,6 +487,8 @@ export class Registrar {
       default: // profile
         if (eventType === 'PageSubmit') {
           loc = `${this.cfg.profileBase}/?workflowID=${this.workflowId}#/signup/enter-email`
+        } else if (eventType === 'EmailVerification') {
+          loc = `${this.cfg.profileBase}/?workflowID=${this.workflowId}#/signup/verify-email`
         } else {
           loc = `${this.cfg.profileBase}/?workflowID=${this.workflowId}#/signup/start`
         }
@@ -568,7 +599,7 @@ export class Registrar {
       'Content-Type': 'application/json',
       'Origin': this.cfg.viewBase,
       'Referer': this.cfg.viewBase + '/',
-      'User-Agent': DEFAULT_UA
+      'User-Agent': this.ua
     }
     const resp = await this.doGet(url, h)
     saveCookies(this.cookies, resp.headers as Record<string, string | string[] | undefined>)
@@ -741,7 +772,7 @@ export class Registrar {
     const url = `${this.cfg.profileBase}/?workflowID=${this.workflowId}`
     const resp = await this.doGet(url, {
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'User-Agent': DEFAULT_UA,
+      'User-Agent': this.ua,
       'sec-fetch-dest': 'document', 'sec-fetch-mode': 'navigate'
     })
     saveCookies(this.cookies, resp.headers as Record<string, string | string[] | undefined>)
@@ -807,7 +838,10 @@ export class Registrar {
     }
 
     const resp = await this.doPost(this.cfg.profileBase + '/api/send-otp', payload, this.buildProfileHeaders(ref))
-    if (resp.status !== 200) throw new Error(`send-otp 失败 (${resp.status}), body: ${resp.body.substring(0, 300)}`)
+    if (resp.status !== 200) {
+      this.log(`[9] send-otp 失败: status=${resp.status}, body=${resp.body.substring(0, 500)}`)
+      throw new Error(`send-otp 失败 (${resp.status}), body: ${resp.body.substring(0, 300)}`)
+    }
     this.log('验证码已发送')
   }
 
@@ -828,7 +862,9 @@ export class Registrar {
   private async step11CreateIdentity(otp: string): Promise<void> {
     this.log('[11] 创建身份')
     const ref = `${this.cfg.profileBase}/?workflowID=${this.workflowId}`
-    const fp = this.genFP('profile', 'EmailVerification', 0, '')
+    const timeOnPage = 30000 + Math.floor(Math.random() * 30001)
+    const fp = this.genFPWithTime('profile', 'EmailVerification', timeOnPage, otp.length, otp)
+    const tsp = String(timeOnPage)
 
     const resp = await this.doPost(this.cfg.profileBase + '/api/create-identity', {
       workflowState: this.workflowState,
@@ -838,7 +874,7 @@ export class Registrar {
         attributes: {
           fingerprint: fp,
           eventTimestamp: new Date().toISOString().replace(/\.\d{3}Z$/, '.000Z'),
-          timeSpentOnPage: '45000', pageName: 'EMAIL_VERIFICATION',
+          timeSpentOnPage: tsp, pageName: 'EMAIL_VERIFICATION',
           eventType: 'EmailVerification', ubid: this.ubid, visitorId: this.vid
         },
         cookies: {}
@@ -951,10 +987,10 @@ export class Registrar {
     const loginURL = `${this.cfg.portalBase}/login?directory_id=view&redirect_url=${redirectURL}`
 
     const h: Record<string, string> = {
-      'Accept': '*/*', 'User-Agent': DEFAULT_UA,
+      'Accept': '*/*', 'User-Agent': this.ua,
       'Origin': this.cfg.viewBase, 'Referer': this.cfg.viewBase + '/',
-      'sec-ch-ua': DEFAULT_SEC_UA, 'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Windows"', 'sec-fetch-dest': 'empty',
+      'sec-ch-ua': this.secChUa, 'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': this.secChUaPlatform, 'sec-fetch-dest': 'empty',
       'sec-fetch-mode': 'cors', 'sec-fetch-site': 'cross-site', 'priority': 'u=1, i'
     }
     if (this.cookies.has('awsccc')) h['Cookie'] = 'awsccc=' + this.cookies.get('awsccc')
@@ -1029,7 +1065,7 @@ export class Registrar {
 
     await this.doGet(startURL, {
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'User-Agent': DEFAULT_UA,
+      'User-Agent': this.ua,
       'Referer': this.cfg.signinBase + '/',
       'sec-fetch-dest': 'document', 'sec-fetch-mode': 'navigate',
       ...(cookieParts.length ? { Cookie: cookieParts.join('; ') } : {})
@@ -1044,11 +1080,11 @@ export class Registrar {
     const h: Record<string, string> = {
       'Accept': 'application/json, text/plain, */*',
       'Content-Type': 'application/x-www-form-urlencoded',
-      'User-Agent': DEFAULT_UA, 'Origin': this.cfg.viewBase,
+      'User-Agent': this.ua, 'Origin': this.cfg.viewBase,
       'Referer': this.cfg.viewBase + '/',
       'x-amz-sso-csrf-token': csrf,
-      'sec-ch-ua': DEFAULT_SEC_UA, 'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Windows"', 'sec-fetch-dest': 'empty',
+      'sec-ch-ua': this.secChUa, 'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': this.secChUaPlatform, 'sec-fetch-dest': 'empty',
       'sec-fetch-mode': 'cors', 'sec-fetch-site': 'cross-site', 'priority': 'u=1, i'
     }
     const formData = `authCode=${encodeURIComponent(this.authCode)}&state=${encodeURIComponent(this.ssoState)}&orgId=view`

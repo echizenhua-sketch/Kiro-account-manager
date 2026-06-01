@@ -882,6 +882,28 @@ interface KiroApi {
     provider?: string
     verify?: Record<string, unknown>
   }) => void) => () => void
+
+  sub2apiWebhook: {
+    getConfig: () => Promise<{
+      enabled: boolean
+      baseUrl: string
+      adminToken: string
+      namePrefix?: string
+      groupIds?: number[]
+    } | { error: string } | null>
+    setConfig: (cfg: {
+      enabled: boolean
+      baseUrl: string
+      adminToken: string
+      namePrefix?: string
+      groupIds?: number[]
+    }) => Promise<{ ok: boolean; config?: unknown; error?: string }>
+    test: (cfg: {
+      enabled: boolean
+      baseUrl: string
+      adminToken: string
+    }) => Promise<{ ok: boolean; status?: number; message: string }>
+  }
 }
 
 declare global {

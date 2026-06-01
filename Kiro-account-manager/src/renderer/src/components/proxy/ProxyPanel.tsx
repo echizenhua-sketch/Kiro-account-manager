@@ -9,6 +9,7 @@ import { ProxyDetailedLogsDialog } from './ProxyDetailedLogsDialog'
 import { ModelsDialog } from './ModelsDialog'
 import { ModelMappingDialog } from './ModelMappingDialog'
 import { AccountSelectDialog } from './AccountSelectDialog'
+import { ManagePoolAccountsDialog } from './ManagePoolAccountsDialog'
 import { ApiKeyManager } from './ApiKeyManager'
 import { ClientConfigDialog } from './ClientConfigDialog'
 import { createPortal } from 'react-dom'
@@ -129,6 +130,7 @@ export function ProxyPanel() {
   const [showModelMappingDialog, setShowModelMappingDialog] = useState(false)
   const [availableModels, setAvailableModels] = useState<Array<{ id: string; name: string }>>([])
   const [showAccountSelectDialog, setShowAccountSelectDialog] = useState(false)
+  const [showManagePoolDialog, setShowManagePoolDialog] = useState(false)
   const [showApiKeyManager, setShowApiKeyManager] = useState(false)
   const [showApiKey, setShowApiKey] = useState(false)
   const [apiKeyFormat, setApiKeyFormat] = useState<'sk' | 'simple' | 'token'>('sk')
@@ -224,7 +226,7 @@ export function ProxyPanel() {
     setSyncSuccess(false)
     try {
       let candidates = Array.from(accounts.values())
-        .filter(acc => acc.status === 'active' && acc.credentials?.accessToken)
+        .filter(acc => acc.inProxyPool === true && acc.status === 'active' && acc.credentials?.accessToken)
 
       // 多账号轮询 + 'groups' 范围：按选中分组过滤（'__ungrouped__' 表示未分组账号）
       if (config.enableMultiAccount && config.multiAccountSelectionMode === 'groups') {
@@ -268,6 +270,18 @@ export function ProxyPanel() {
   // 启动服务器
   const handleStart = async () => {
     setError(null)
+
+    // 前置校验：必须至少有一个账号已加入代理池
+    const inPoolCount = Array.from(accounts.values())
+      .filter(acc => acc.inProxyPool === true && acc.status === 'active' && acc.credentials?.accessToken).length
+    if (inPoolCount === 0) {
+      setError(isEn
+        ? 'No accounts in the proxy pool. Click "Manage Pool Accounts" to select accounts first.'
+        : '尚未选择任何账号加入代理池，请点击"管理账号"勾选要使用的账号。')
+      setShowManagePoolDialog(true)
+      return
+    }
+
     try {
       // 先同步账号
       await syncAccounts()
@@ -285,6 +299,11 @@ export function ProxyPanel() {
       if (result.success) {
         setIsRunning(true)
         await fetchStatus()
+      } else if (result.error === 'NO_ACCOUNT_IN_POOL') {
+        setError((result as { message?: string }).message || (isEn
+          ? 'No accounts in the proxy pool.'
+          : '尚未选择任何账号加入代理池'))
+        setShowManagePoolDialog(true)
       } else {
         setError(result.error || (isEn ? 'Failed to start' : '启动失败'))
       }
@@ -498,6 +517,10 @@ export function ProxyPanel() {
                 {isEn ? 'Stop Service' : '停止服务'}
               </Button>
             )}
+            <Button onClick={() => setShowManagePoolDialog(true)} variant="outline" className="gap-2">
+              <Users className="h-4 w-4" />
+              {isEn ? 'Manage Pool Accounts' : '管理账号'}
+            </Button>
             <Button onClick={syncAccounts} variant="outline" className="gap-2" disabled={!isRunning || isSyncing}>
               {isSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : syncSuccess ? <Check className="h-4 w-4 text-success" /> : <RefreshCw className="h-4 w-4" />}
               {isSyncing ? (isEn ? 'Syncing...' : '同步中...') : syncSuccess ? (isEn ? 'Synced!' : '已同步') : (isEn ? 'Sync Accounts' : '同步账号')}
@@ -1432,6 +1455,18 @@ export function ProxyPanel() {
         }}
         apiKeys={(config.apiKeys || []).map(k => ({ id: k.id, name: k.name }))}
         availableModels={availableModels}
+      />
+
+      {/* 管理代理池账号弹窗 */}
+      <ManagePoolAccountsDialog
+        open={showManagePoolDialog}
+        onOpenChange={setShowManagePoolDialog}
+        isEn={isEn}
+        onAfterChange={() => {
+          if (isRunning) {
+            syncAccounts()
+          }
+        }}
       />
 
       {/* 账号选择弹窗 */}

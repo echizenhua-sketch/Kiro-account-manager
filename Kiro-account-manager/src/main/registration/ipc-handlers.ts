@@ -1,16 +1,64 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import { Registrar, newConfig, type RegistrationConfig } from './index'
+import {
+  getSub2apiWebhookConfig,
+  pushRegistrationToSub2api,
+  type Sub2apiWebhookConfig,
+  type KiroStoreLike
+} from '../sub2api-webhook'
 
 // 注册池：支持多个并发注册任务
 const registrarPool = new Map<string, Registrar>()
 // 手动模式使用固定 key
 const MANUAL_KEY = '__manual__'
 
-export function registerIPCHandlers(getMainWindow: () => BrowserWindow | null): void {
+// 由 main/index.ts 注入的 store getter（避免循环依赖）
+type StoreGetter = () => KiroStoreLike | null
+
+export function registerIPCHandlers(
+  getMainWindow: () => BrowserWindow | null,
+  getStore?: StoreGetter
+): void {
   const sendLog = (msg: string, taskId?: string): void => {
     const win = getMainWindow()
     if (win && !win.isDestroyed()) {
       win.webContents.send('registration-log', { message: msg, taskId })
+    }
+  }
+
+  // 注册成功后调 sub2api webhook（可选；任何失败仅 log 警告，不阻塞主流程）
+  const maybePushToSub2api = async (
+    result: Awaited<ReturnType<Registrar['run']>>,
+    logPrefix: string,
+    taskId?: string
+  ): Promise<void> => {
+    if (result.status !== 'success') return
+    const store = getStore?.()
+    if (!store) return
+    let cfg: Sub2apiWebhookConfig
+    try {
+      cfg = getSub2apiWebhookConfig(store)
+    } catch (err) {
+      sendLog(`${logPrefix}⚠️ sub2api 配置读取失败：${(err as Error).message}`, taskId)
+      return
+    }
+    if (!cfg.enabled) return
+    sendLog(`${logPrefix}→ 正在推送到 sub2api...`, taskId)
+    try {
+      const r = await pushRegistrationToSub2api(cfg, result)
+      if (r.created > 0) {
+        sendLog(
+          `${logPrefix}✅ 已同步到 sub2api${r.accountId ? `（账号 ID: ${r.accountId}）` : ''}`,
+          taskId
+        )
+      } else {
+        sendLog(
+          `${logPrefix}⚠️ sub2api 接受请求但 created=0，failed=${r.failed}${r.message ? '：' + r.message : ''}`,
+          taskId
+        )
+      }
+    } catch (err) {
+      sendLog(`${logPrefix}⚠️ sub2api 推送失败：${(err as Error).message}`, taskId)
     }
   }
 
@@ -28,6 +76,8 @@ export function registerIPCHandlers(getMainWindow: () => BrowserWindow | null): 
       const result = await registrar.run()
       // run() 内部 finally 已调用 cleanup()，无需再次 destroy
       registrarPool.delete(taskId)
+      // sub2api webhook（不阻塞返回）
+      await maybePushToSub2api(result, logPrefix, config.taskId)
       // 仅单次注册（无 taskId）发送 complete 事件
       if (!config.taskId) {
         const win = getMainWindow()
@@ -87,6 +137,8 @@ export function registerIPCHandlers(getMainWindow: () => BrowserWindow | null): 
     const result = await registrar.runManualPhase3(otp)
     await registrar.destroy()
     registrarPool.delete(MANUAL_KEY)
+    // sub2api webhook
+    await maybePushToSub2api(result, '', undefined)
     return { success: true, result }
   })
 

@@ -21,6 +21,12 @@ import { getSystemProxy, safeCreateProxyAgent } from './proxy/systemProxy'
 import { proxyLogStore, interceptConsole } from './proxy/logger'
 import { registerIPCHandlers as registerRegistrationHandlers } from './registration/ipc-handlers'
 import {
+  getSub2apiWebhookConfig,
+  setSub2apiWebhookConfig,
+  testSub2apiWebhook,
+  type Sub2apiWebhookConfig
+} from './sub2api-webhook'
+import {
   createTray,
   destroyTray,
   updateTrayMenu,
@@ -458,7 +464,7 @@ function initProxyServer(): ProxyServer {
         }
 
         const proxyAccounts = Object.values(accountData.accounts)
-          .filter((acc: any) => acc.status === 'active' && acc.credentials?.accessToken)
+          .filter((acc: any) => acc.inProxyPool === true && acc.status === 'active' && acc.credentials?.accessToken)
           .map((acc: any) => ({
             id: acc.id,
             email: acc.email,
@@ -1693,7 +1699,7 @@ function createWindow(): void {
           }
 
           const proxyAccounts = Object.values(accountData.accounts)
-            .filter((acc: any) => acc.status === 'active' && acc.credentials?.accessToken)
+            .filter((acc: any) => acc.inProxyPool === true && acc.status === 'active' && acc.credentials?.accessToken)
             .map((acc: any) => ({
               id: acc.id,
               email: acc.email,
@@ -1935,7 +1941,31 @@ app.whenReady().then(async () => {
   })
 
   // ============ 注册功能 IPC ============
-  registerRegistrationHandlers(() => mainWindow)
+  registerRegistrationHandlers(() => mainWindow, () => store)
+
+  // ============ sub2api Webhook IPC ============
+  ipcMain.handle('sub2api-webhook:get-config', async () => {
+    if (!store) return null
+    try {
+      return getSub2apiWebhookConfig(store)
+    } catch (err) {
+      return { error: (err as Error).message }
+    }
+  })
+
+  ipcMain.handle('sub2api-webhook:set-config', async (_event, cfg: Sub2apiWebhookConfig) => {
+    if (!store) return { ok: false, error: 'store 未初始化' }
+    try {
+      const saved = setSub2apiWebhookConfig(store, cfg)
+      return { ok: true, config: saved }
+    } catch (err) {
+      return { ok: false, error: (err as Error).message }
+    }
+  })
+
+  ipcMain.handle('sub2api-webhook:test', async (_event, cfg: Sub2apiWebhookConfig) => {
+    return await testSub2apiWebhook(cfg)
+  })
 
   // ============ 托盘相关 IPC ============
 
@@ -5183,6 +5213,14 @@ app.whenReady().then(async () => {
       const server = initProxyServer()
       if (config) {
         server.updateConfig(config)
+      }
+      // 启动前校验：必须至少有一个账号已加入代理池
+      if (server.getAccountPool().size === 0) {
+        return {
+          success: false,
+          error: 'NO_ACCOUNT_IN_POOL',
+          message: '尚未选择任何账号加入代理池，请先在"管理账号"中勾选要使用的账号'
+        }
       }
       await server.start()
       // 更新托盘菜单状态
